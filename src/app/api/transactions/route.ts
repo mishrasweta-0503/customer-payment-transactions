@@ -1,9 +1,23 @@
-
-
 import { NextRequest, NextResponse } from 'next/server';
 
-//sample data to go with transaction list
-const transactions = [
+interface Transaction {
+  id: string;
+  reference: string;
+  customerId: string;
+  beneficiaryName: string;
+  beneficiaryAccount: string;
+  sourceCurrency: string;
+  destinationCurrency: string;
+  sourceAmount: string;
+  destinationAmount: string | null;
+  exchangeRate: string | null;
+  riskLevel: string | null;
+  status: string;
+  providerReference: string | null;
+  createdAt: string;
+}
+
+const transactions: Transaction[] = [
   {
     id: 'TX-101',
     reference: 'REF-101',
@@ -38,6 +52,8 @@ const transactions = [
   },
 ];
 
+const processedTokens = new Set<string>();
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const search = searchParams.get('search') || '';
@@ -47,8 +63,6 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get('limit') || '10', 10);
 
   let filtered = [...transactions];
-
-  // 1. Filter by search query
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(
@@ -81,4 +95,81 @@ export async function GET(request: NextRequest) {
     currentPage: page,
     totalItems,
   });
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const {
+      idempotencyKey,
+      customerId,
+      beneficiaryName,
+      beneficiaryAccount,
+      sourceCurrency,
+      destinationCurrency,
+      sourceAmount,
+    } = body;
+
+    // Avoid repeated submissions
+    if (idempotencyKey && processedTokens.has(idempotencyKey)) {
+      return NextResponse.json(
+        { error: 'Duplicate submission detected. Please do not re-submit.' },
+        { status: 409 }
+      );
+    }
+
+    // Server side validation
+    const errors: Record<string, string> = {};
+
+    if (!customerId || customerId.trim() === '') {
+      errors.customerId = 'Customer ID is required.';
+    }
+    if (!beneficiaryName || beneficiaryName.trim() === '') {
+      errors.beneficiaryName = 'Beneficiary Name is required.';
+    }
+    if (!beneficiaryAccount || beneficiaryAccount.trim().length < 8) {
+      errors.beneficiaryAccount = 'Beneficiary Account must be at least 8 digits.';
+    }
+    if (!sourceCurrency) {
+      errors.sourceCurrency = 'Source currency is required.';
+    }
+    if (!destinationCurrency) {
+      errors.destinationCurrency = 'Destination currency is required.';
+    }
+    if (!sourceAmount || isNaN(Number(sourceAmount)) || Number(sourceAmount) <= 0) {
+      errors.sourceAmount = 'Amount must be a positive number greater than 0.';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      return NextResponse.json({ error: 'Validation failed', details: errors }, { status: 400 });
+    }
+
+    // Lock token if provided
+    if (idempotencyKey) {
+      processedTokens.add(idempotencyKey);
+    }
+
+    const newTransaction: Transaction = {
+      id: `TX-${Date.now()}`,
+      reference: `REF-${Math.floor(1000 + Math.random() * 9000)}`,
+      customerId: String(customerId),
+      beneficiaryName: String(beneficiaryName),
+      beneficiaryAccount: String(beneficiaryAccount),
+      sourceCurrency: String(sourceCurrency),
+      destinationCurrency: String(destinationCurrency),
+      sourceAmount: String(sourceAmount),
+      destinationAmount: null,
+      exchangeRate: null,
+      riskLevel: 'NOT_ASSESSED',
+      status: 'DRAFT',
+      providerReference: null,
+      createdAt: new Date().toISOString(),
+    };
+
+    transactions.unshift(newTransaction);
+
+    return NextResponse.json(newTransaction, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
 }
