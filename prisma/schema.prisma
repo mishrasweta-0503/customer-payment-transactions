@@ -1,13 +1,43 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum Status {
+  DRAFT
+  PENDING_REVIEW
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Transaction {
+  id                  String     @id @default(uuid())
+  reference           String     @unique @default(cuid())
+  customerId          String
+  beneficiaryName     String
+  beneficiaryAccount  String
+  sourceCurrency      String
+  destinationCurrency String
+  sourceAmount        String
+  destinationAmount   String?
+  exchangeRate        String?
+  riskLevel           RiskLevel?
+  status              Status     @default(DRAFT)
+  providerReference   String?    @unique
+  createdAt           DateTime   @default(now())
+
+  @@index([customerId])
+  @@index([status, sourceCurrency])
+  @@index([createdAt])
 }
