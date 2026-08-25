@@ -1,44 +1,87 @@
-//the purpose here is to avoid unnecessary repeated provider calls while ensuring that exchange rates are not kept indefinitely
+import { Redis } from 'ioredis';
 
-interface CacheEntry{
-    rate: string;
-    expiresAt: number;
+const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+
+const CACHE_TTL_SECONDS = 5 * 60; // 5 mins primary cache
+const STALE_TTL_SECONDS = 24 * 60 * 60; // 24 hours fallback cache
+const MAX_CALLS_PER_MIN = 60;
+
+const globalForRequests = globalThis as unknown as {
+  inFlightRequests: Map<string, Promise<string>> | undefined;
+};
+const inFlightRequests =
+  globalForRequests.inFlightRequests ?? new Map<string, Promise<string>>();
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForRequests.inFlightRequests = inFlightRequests;
+}
+async function checkProviderRateLimit(): Promise<boolean> {
+  const now = Date.now();
+  const windowStart = now - 60 * 1000;
+  const rateLimitKey = 'provider_rate_limit:exchange_rate';
+
+  const pipeline = redis.pipeline();
+  pipeline.zremrangebyscore(rateLimitKey, 0, windowStart);
+  pipeline.zcard(rateLimitKey);
+  pipeline.zadd(rateLimitKey, now, `${now}-${Math.random()}`);
+  pipeline.expire(rateLimitKey, 60);
+
+  const results = await pipeline.exec();
+  const currentRequestCount = (results?.[1]?.[1] as number) || 0;
+
+  return currentRequestCount < MAX_CALLS_PER_MIN;
 }
 
-const globalForCache = globalThis as unknown as {
-    rateCache: Map<string, CacheEntry> | undefined;
-  };
-
-const rateCache = globalForCache.rateCache ?? new Map<string, CacheEntry>();
-if (process.env.NODE_ENV !== 'production') globalForCache.rateCache = rateCache;
-
-const CACHE_TTL_MS = 5 * 60 * 1000; //cache duration is 5 mins
-
 export async function getExchangeRate(from: string, to: string): Promise<string> {
-    const pair_key = `${from.toUpperCase()}_${to.toUpperCase()}` //lookup key
-    const now = Date.now();
-    const cached = rateCache.get(pair_key);
-    if(cached && cached.expiresAt > now){
-        console.log(`Cache Hit! Returning cached rate for ${pair_key}: ${cached.rate}`);
-        return cached.rate;
-    }
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://127.0.0.1:3001' || 'http://127.0.0.1:3000';
+  const pairKey = `rate:${from.toUpperCase()}_${to.toUpperCase()}`;
+  const staleKey = `stale_rate:${from.toUpperCase()}_${to.toUpperCase()}`;
+  const cachedRate = await redis.get(pairKey);
+  if (cachedRate) {
+    console.log(`Cache Hit! Returning cached rate for ${pairKey}: ${cachedRate}`);
+    return cachedRate;
+  }
+  if (inFlightRequests.has(pairKey)) {
+    console.log(`Deduplicating fetch request for ${pairKey}`);
+    return await inFlightRequests.get(pairKey)!;
+  }
+  const fetchPromise = (async (): Promise<string> => {
     try {
-        const response = await fetch(`${baseUrl}/external/exchange-rate?from=${from}&to=${to}`, { cache: 'no-store' });
-        if (!response.ok) {
-            throw new Error('External API request failed')
-        };
-        const data = await response.json();
-        const rate = data.rate;
-        rateCache.set(pair_key, {rate,expiresAt: now + CACHE_TTL_MS});
-        return rate;
-    } catch (error) {
-        //if external api fails or times out, an expired cached entry is returned instead of throwing a new error.
-        //this handles temporarily unavailable responses
-        if (cached) {
-            console.warn(`Returning stale rate for ${pair_key}: ${cached.rate}`);
-            return cached.rate;
+      const canMakeRequest = await checkProviderRateLimit();
+      if (!canMakeRequest) {
+        const staleRate = await redis.get(staleKey);
+        if (staleRate) {
+          console.warn(`Global provider limit hit (60 req/min). Returning stale rate for ${pairKey}: ${staleRate}`);
+          return staleRate;
         }
-        throw new Error(`Unable to fetch exchange rate for ${from} to ${to}`);
+        throw new Error(`Provider rate limit reached (60 req/min). Please try again in a minute.`);
+      }
+
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://127.0.0.1:3001';
+      const response = await fetch(`${baseUrl}/external/exchange-rate?from=${from}&to=${to}`, {
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        throw new Error(`External API request failed with status: ${response.status}`);
+      }
+      const data = await response.json();
+      const rate = String(data.rate);
+      await redis.set(pairKey, rate, 'EX', CACHE_TTL_SECONDS);
+      await redis.set(staleKey, rate, 'EX', STALE_TTL_SECONDS);
+
+      return rate;
+    } catch (error) {
+      const staleRate = await redis.get(staleKey);
+      if (staleRate) {
+        console.warn(`Provider failed. Returning stale rate for ${pairKey}: ${staleRate}`);
+        return staleRate;
+      }
+      throw error;
+    } finally {
+      inFlightRequests.delete(pairKey);
     }
+  })();
+
+  inFlightRequests.set(pairKey, fetchPromise);
+  return await fetchPromise;
 }
