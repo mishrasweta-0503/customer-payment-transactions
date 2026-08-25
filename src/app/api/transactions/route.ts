@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { applyRateLimit } from '@/lib/rateLimiter';
 
 interface Transaction {
   id: string;
@@ -55,6 +56,8 @@ const transactions: Transaction[] = [
 const processedTokens = new Set<string>();
 
 export async function GET(request: NextRequest) {
+  const limitResponse = await applyRateLimit(request, 'transactions-list');
+  if (limitResponse) return limitResponse;
   const { searchParams } = new URL(request.url);
   const search = searchParams.get('search') || '';
   const status = searchParams.get('status') || '';
@@ -91,13 +94,16 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     items,
+    totalItems,
     totalPages,
     currentPage: page,
-    totalItems,
+    limit,
   });
 }
 
 export async function POST(request: NextRequest) {
+  const limitResponse = await applyRateLimit(request, 'transactions-create');
+  if (limitResponse) return limitResponse;
   try {
     const body = await request.json();
     const {
