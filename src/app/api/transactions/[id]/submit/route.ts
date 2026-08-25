@@ -17,10 +17,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
   try {
     const body = await request.json().catch(() => ({}));
+    const rawAmount = body.sourceAmount ?? body.amount ?? 3500;
+    const sourceAmount = Number(rawAmount) || 3500;
     //validates that the transaction is in "DRAFT" status before processing
     const tx = {
       id: transactionId,
-      sourceAmount: body.amount ?? 6000,
+      sourceAmount,
       sourceCurrency: body.sourceCurrency || 'AED',
       destinationCurrency: body.destinationCurrency || 'USD',
       status: 'DRAFT',
