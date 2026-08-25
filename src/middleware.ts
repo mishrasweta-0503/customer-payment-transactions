@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from 'ioredis';
 
+// Force Node.js runtime so ioredis works properly inside Next.js middleware
+export const runtime = 'nodejs';
+
 const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
 
 //a max of 20 requests per client in a 10 sec window
