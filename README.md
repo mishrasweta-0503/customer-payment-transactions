@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
 
-First, run the development server:
+A full-stack payment transaction management system built with Next.js (App Router), TypeScript, PostgreSQL, Redis and Prisma ORM. The application handles financial transaction workflows, multi-currency conversions, distributed rate limiting, concurrent execution locks, and mock integrations with external risk assessment and payment processing services.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Create a local environment file before running the application:
+    cp .env.example .env
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Your .env file should contain the following environment settings:
+    # Application Setup
+    NODE_ENV=development
+    PORT=3000
+    NEXT_PUBLIC_APP_URL="http://localhost:3000"/"http://localhost:3001"
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+    # Database Configuration (PostgreSQL)
+    DATABASE_URL="postgresql://postgres:postgres@localhost:5432/customer_payment?schema=public"
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+    # Cache & Distributed Lock (Redis)
+    REDIS_URL="redis://127.0.0.1:6379"
 
-## Learn More
+## Installation
+    git clone [https://github.com/mishrasweta-0503/customer-payment-transactions.git]
+    cd customer_payment
+    npm install
 
-To learn more about Next.js, take a look at the following resources:
+## Database Setup & Seeding
+    # Apply database migrations
+    npx prisma migrate dev
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+    # Seed database with initial records
+    npm run seed
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Run Development Server
+    npm run dev (The application will be accessible at http://localhost:3000 or http://localhost:3001)
 
-## Deploy on Vercel
+## To spin up the application along with PostgreSQL and Redis containers in an isolated environment:
+    # Build and start all services in detached mode
+    docker-compose up -d --build
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+    # Inspect container status
+    docker-compose ps
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## API Documentation & Usage
+    Endpoint: GET /api/transactions (Retrieves a paginated list of transactions with optional search and filtering.)
+
+    Endpoint: POST /api/transactions (Creates a new transaction record in DRAFT status)
+        {
+            "idempotencyKey": "KEY-8832-100",
+            "customerId": "CUST-100",
+            "beneficiaryName": "John Doe",
+            "beneficiaryAccount": "ACC-99887766",
+            "sourceCurrency": "AED",
+            "destinationCurrency": "USD",
+            "sourceAmount": "3500"
+        }
+
+    Endpoint: POST /api/transactions/:id/submit (Executes the submission workflow for a DRAFT transaction by performing a risk assessment check and triggering payment processing.)
+        {
+            "sourceAmount": 3500,
+            "sourceCurrency": "AED",
+            "destinationCurrency": "USD"
+        }
+
+    Endpoint: `POST /external/risk-assessment`
+        * **Headers:** `Content-Type: application/json`
+        * **Rules:**
+        * **Low Risk (`< 5000` AED/source amount):** Assigns a low risk score (`LOW`). Transaction status updates to **`COMPLETED`**.
+        * **High Risk (`>= 5000` AED/source amount): Assigns a high risk score (`HIGH`, score >= 85). Transaction status updates to `PENDING_REVIEW`.
+
+    Endpoint: POST /external/payments (Payment Gateway Mock Service)
+
+## How to Test Rate Limiting Section
+    The API endpoints are protected by Redis-backed rate limiting (`20 requests per 10-second window` per client IP).
+    Endpoint: http://localhost:3001/api/transactions (Method: GET, click send 20 times in less than 10 seconds in postman)
+        Response Payload on Rate Limit Exceeded (HTTP 429):
+            {
+                "error": "Too Many Requests",
+                "message": "Rate limit exceeded. Please try again later.",
+                "retryAfter": 10
+            }
